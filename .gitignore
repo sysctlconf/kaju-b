@@ -1,0 +1,4 @@
+node_modules/
+memebot.db
+*.db
+.env
