@@ -1,17 +1,16 @@
-const { createCanvas, loadImage, GlobalFonts } = require('@napi-rs/canvas');
-const { AttachmentBuilder, EmbedBuilder } = require('discord.js');
+const { createCanvas, loadImage } = require('@napi-rs/canvas');
+const { AttachmentBuilder } = require('discord.js');
 const { getUser } = require('../database');
 const config = require('../config');
 const https = require('https');
 const http = require('http');
 
-/**
- * Fetch image from URL as a Buffer.
- */
-function fetchImage(url) {
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+function fetchBuffer(url) {
     return new Promise((resolve, reject) => {
         const proto = url.startsWith('https') ? https : http;
-        proto.get(url, (res) => {
+        proto.get(url, res => {
             const chunks = [];
             res.on('data', c => chunks.push(c));
             res.on('end', () => resolve(Buffer.concat(chunks)));
@@ -20,10 +19,8 @@ function fetchImage(url) {
     });
 }
 
-/**
- * Draws a rounded rectangle path.
- */
-function roundRect(ctx, x, y, w, h, r) {
+/** Draw a filled rounded-rect path */
+function pillPath(ctx, x, y, w, h, r) {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
     ctx.lineTo(x + w - r, y);
@@ -37,160 +34,204 @@ function roundRect(ctx, x, y, w, h, r) {
     ctx.closePath();
 }
 
-/**
- * Generates the profile canvas for a user.
- * Returns an AttachmentBuilder.
- */
+// ── starfield ────────────────────────────────────────────────────────────────
+
+/** Seed-based simple random, reproducible per user */
+function seededRand(seed) {
+    let s = seed;
+    return () => {
+        s = (s * 16807 + 0) % 2147483647;
+        return (s - 1) / 2147483646;
+    };
+}
+
+function drawStarfield(ctx, W, H, seed = 42) {
+    const rand = seededRand(seed);
+    const STARS = 280;
+    for (let i = 0; i < STARS; i++) {
+        const x = rand() * W;
+        const y = rand() * H;
+        const r = rand() * 1.4 + 0.3;
+        const a = rand() * 0.7 + 0.3;
+
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${a.toFixed(2)})`;
+        ctx.fill();
+    }
+}
+
+// ── main generator ───────────────────────────────────────────────────────────
+
 async function generateProfileCard(member, dbUser) {
-    const W = 800, H = 270;
+    const W = 960, H = 460;
     const canvas = createCanvas(W, H);
     const ctx = canvas.getContext('2d');
 
     const level = dbUser.level;
-    const accentColor = config.LEVEL_COLORS[Math.max(0, level - 1)] || '#9E9E9E';
-    const rank = level > 0 ? config.RANKS[level - 1] : null;
-    const rankName = rank ? rank.name : 'Unranked';
-    const currentXp = dbUser.xp;
+    const rankObj = level > 0 ? config.RANKS[level - 1] : null;
+    const rankName = rankObj ? rankObj.name : 'Unranked';
+    const xp = dbUser.xp;
+    const totalXp = dbUser.total_xp || 0;
     const xpNeeded = level < 10 ? config.LEVEL_XP[level] : config.LEVEL_XP[9];
-    const xpProgress = level < 10 ? Math.min(currentXp / xpNeeded, 1) : 1;
+    const pct = level >= 10 ? 100 : Math.round((xp / xpNeeded) * 100);
+    const barFill = level >= 10 ? 1 : Math.min(xp / xpNeeded, 1);
 
-    // --- Background ---
-    const bg = ctx.createLinearGradient(0, 0, W, H);
-    bg.addColorStop(0, '#0f0f1a');
-    bg.addColorStop(1, '#1a1a2e');
-    ctx.fillStyle = bg;
-    roundRect(ctx, 0, 0, W, H, 20);
-    ctx.fill();
+    // ── Background ─────────────────────────────────────────────────────────────
+    // Deep space navy gradient
+    const bgGrad = ctx.createRadialGradient(W * 0.5, H * 0.45, 0, W * 0.5, H * 0.45, W * 0.75);
+    bgGrad.addColorStop(0, '#0d1035');
+    bgGrad.addColorStop(0.6, '#080820');
+    bgGrad.addColorStop(1, '#04040f');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
 
-    // --- Accent side bar ---
-    ctx.fillStyle = accentColor;
-    roundRect(ctx, 0, 0, 8, H, 4);
-    ctx.fill();
+    // Stars
+    drawStarfield(ctx, W, H, member.user.id.charCodeAt(0));
 
-    // --- Glow behind avatar ---
-    const glowGrad = ctx.createRadialGradient(130, 135, 20, 130, 135, 90);
-    glowGrad.addColorStop(0, accentColor + '55');
-    glowGrad.addColorStop(1, 'transparent');
-    ctx.fillStyle = glowGrad;
-    ctx.fillRect(40, 45, 180, 180);
+    // ── Avatar shadow bloom ─────────────────────────────────────────────────────
+    const avatarCX = 230, avatarCY = 270, avatarR = 155;
 
-    // --- Avatar ---
-    let avatarImg;
-    try {
-        const avatarUrl = member.user.displayAvatarURL({ extension: 'png', size: 256 });
-        const avatarBuf = await fetchImage(avatarUrl);
-        avatarImg = await loadImage(avatarBuf);
-    } catch {
-        avatarImg = null;
-    }
+    const bloom = ctx.createRadialGradient(avatarCX, avatarCY, avatarR * 0.4, avatarCX, avatarCY, avatarR * 1.6);
+    bloom.addColorStop(0, 'rgba(80,80,160,0.35)');
+    bloom.addColorStop(1, 'transparent');
+    ctx.fillStyle = bloom;
+    ctx.fillRect(avatarCX - avatarR * 2, avatarCY - avatarR * 2, avatarR * 4, avatarR * 4);
 
-    // Avatar circle clip
+    // ── Avatar circle ───────────────────────────────────────────────────────────
     ctx.save();
     ctx.beginPath();
-    ctx.arc(130, 135, 80, 0, Math.PI * 2);
+    ctx.arc(avatarCX, avatarCY, avatarR, 0, Math.PI * 2);
     ctx.closePath();
     ctx.clip();
-    if (avatarImg) {
-        ctx.drawImage(avatarImg, 50, 55, 160, 160);
-    } else {
-        ctx.fillStyle = '#333';
-        ctx.fill();
+
+    try {
+        const avatarUrl = member.user.displayAvatarURL({ extension: 'png', size: 256 });
+        const buf = await fetchBuffer(avatarUrl);
+        const img = await loadImage(buf);
+        ctx.drawImage(img,
+            avatarCX - avatarR, avatarCY - avatarR,
+            avatarR * 2, avatarR * 2
+        );
+    } catch {
+        // fallback: dark circle
+        ctx.fillStyle = '#1e1e3a';
+        ctx.fillRect(avatarCX - avatarR, avatarCY - avatarR, avatarR * 2, avatarR * 2);
     }
     ctx.restore();
 
-    // Avatar border ring
-    ctx.strokeStyle = accentColor;
-    ctx.lineWidth = 4;
+    // Soft inner shadow on avatar edge
+    const edgeShadow = ctx.createRadialGradient(
+        avatarCX, avatarCY, avatarR * 0.85,
+        avatarCX, avatarCY, avatarR
+    );
+    edgeShadow.addColorStop(0, 'transparent');
+    edgeShadow.addColorStop(1, 'rgba(5,5,20,0.55)');
+    ctx.save();
     ctx.beginPath();
-    ctx.arc(130, 135, 82, 0, Math.PI * 2);
+    ctx.arc(avatarCX, avatarCY, avatarR, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.fillStyle = edgeShadow;
+    ctx.fill();
+    ctx.restore();
+
+    // ── Level badge circle (top-left of avatar) ──────────────────────────────
+    const badgeCX = avatarCX - 85, badgeCY = avatarCY - avatarR + 10;
+    const badgeR = 44;
+
+    // Badge background
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(badgeCX, badgeCY, badgeR, 0, Math.PI * 2);
+    ctx.fillStyle = '#1c1c38';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
     ctx.stroke();
+    ctx.restore();
 
-    // --- Level badge ---
-    ctx.fillStyle = accentColor;
-    ctx.beginPath();
-    ctx.arc(195, 55, 24, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 16px sans-serif';
+    // Badge text "LvX"
+    ctx.font = 'bold 19px sans-serif';
+    ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
-    ctx.fillText(`LV${level}`, 195, 61);
+    ctx.fillText(`Lv${level}`, badgeCX, badgeCY + 7);
 
-    // --- Username ---
+    // ── Right-side content ─────────────────────────────────────────────────────
+    const contentX = 420;
+    const rankY = 230;
+
+    // Rank name with "║" prefix
+    ctx.font = 'bold 38px sans-serif';
+    ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 34px sans-serif';
-    ctx.fillText(member.user.username, 240, 90);
+    ctx.fillText(`\u2016 ${rankName}`, contentX, rankY);
 
-    // --- Rank name ---
-    ctx.fillStyle = accentColor;
-    ctx.font = 'bold 22px sans-serif';
-    ctx.fillText(`🏆 ${rankName}`, 240, 128);
-
-    // --- XP text ---
-    ctx.fillStyle = '#cccccc';
-    ctx.font = '16px sans-serif';
+    // XP line
+    ctx.font = '22px sans-serif';
+    ctx.fillStyle = 'rgba(220,220,255,0.75)';
     if (level < 10) {
-        ctx.fillText(`XP: ${currentXp} / ${xpNeeded}  •  Total: ${dbUser.total_xp} memes`, 240, 162);
+        ctx.fillText(`XP: ${xp} / ${xpNeeded}  \u00b7  Total: ${totalXp} memes`, contentX, rankY + 52);
     } else {
-        ctx.fillText(`MAX LEVEL  •  Total: ${dbUser.total_xp} memes`, 240, 162);
+        ctx.fillText(`MAX LEVEL  \u00b7  Total: ${totalXp} memes`, contentX, rankY + 52);
     }
 
-    // --- XP bar background ---
-    const barX = 240, barY = 185, barW = 510, barH = 22;
-    ctx.fillStyle = '#2a2a3e';
-    roundRect(ctx, barX, barY, barW, barH, 11);
+    // ── XP bar (pill) ──────────────────────────────────────────────────────────
+    const barX = contentX, barY = rankY + 82, barW = 480, barH = 52, barRad = 26;
+
+    // Track (dark pill)
+    pillPath(ctx, barX, barY, barW, barH, barRad);
+    ctx.fillStyle = '#1a1a3e';
     ctx.fill();
 
-    // --- XP bar fill ---
-    if (xpProgress > 0) {
-        const fillW = Math.max(22, barW * xpProgress);
-        const barFill = ctx.createLinearGradient(barX, barY, barX + fillW, barY);
-        barFill.addColorStop(0, accentColor + 'aa');
-        barFill.addColorStop(1, accentColor);
-        ctx.fillStyle = barFill;
-        roundRect(ctx, barX, barY, fillW, barH, 11);
+    // Fill
+    if (barFill > 0) {
+        const fillW = Math.max(barH, barW * barFill); // at least as wide as height for round ends
+        ctx.save();
+        pillPath(ctx, barX, barY, barW, barH, barRad); // clip to track
+        ctx.clip();
+
+        const fillGrad = ctx.createLinearGradient(barX, barY, barX + fillW, barY);
+        fillGrad.addColorStop(0, '#3a3a7a');
+        fillGrad.addColorStop(1, '#5a5aaa');
+        pillPath(ctx, barX, barY, fillW, barH, barRad);
+        ctx.fillStyle = fillGrad;
         ctx.fill();
+        ctx.restore();
     }
 
-    // --- XP bar percentage label ---
+    // % label centred in bar
+    ctx.font = 'bold 22px sans-serif';
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 13px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`${Math.round(xpProgress * 100)}%`, barX + barW / 2, barY + 15);
+    ctx.fillText(`${pct}%`, barX + barW / 2, barY + barH / 2 + 8);
 
-    // --- Footer label ---
+    // ── Footer ─────────────────────────────────────────────────────────────────
+    ctx.font = '18px sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.30)';
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#555577';
-    ctx.font = '13px sans-serif';
-    ctx.fillText('CAJU Meme Bot', W - 20, H - 15);
+    ctx.fillText('CAJU Meme Bot', W - 28, H - 22);
 
-    const buffer = canvas.toBuffer('image/png');
-    return new AttachmentBuilder(buffer, { name: 'profile.png' });
+    return new AttachmentBuilder(canvas.toBuffer('image/png'), { name: 'profile.png' });
 }
 
-/**
- * Handles !p / !P command.
- */
+// ── command handler ───────────────────────────────────────────────────────────
+
 async function handleProfile(message) {
     const guild = message.guild;
     if (!guild) return;
 
-    let target = message.mentions.members?.first() || message.member;
-
+    const target = message.mentions.members?.first() || message.member;
     const dbUser = getUser(target.id, target.user.username);
-    if (dbUser.level === 0 && dbUser.xp === 0) {
-        // New user, still at level 0
-    }
 
     try {
         const attachment = await generateProfileCard(target, dbUser);
         await message.channel.send({
-            content: `📊 Profile for **${target.user.username}**`,
+            content: `📊 **${target.user.username}**`,
             files: [attachment],
         });
     } catch (err) {
-        console.error('[Profile] Error generating card:', err);
-        await message.channel.send('❌ Could not generate profile card. Try again later.');
+        console.error('[Profile]', err);
+        await message.channel.send('❌ Could not generate profile card.');
     }
 }
 
