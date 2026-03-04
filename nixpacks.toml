@@ -1,0 +1,3 @@
+# Install font rendering support on Railway's Nixpacks Linux environment
+[phases.setup]
+nixPkgs = ["nodejs", "fontconfig", "liberation_ttf", "noto-fonts"]

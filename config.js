@@ -11,7 +11,7 @@ module.exports = {
 
     COMMANDS_CHANNEL: '1478459670245933237',
     FENCE_IMAGE: '71c83a3bc2488e6e.jpg',
-    TICKET_BG: 'image0.png',
+    TICKET_BG: 'image0.jpg',
     PROFILE_BG: 'pixel2.png',
 
     LEVEL_XP: [10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120],

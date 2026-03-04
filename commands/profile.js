@@ -7,7 +7,7 @@ const https = require('https');
 const http = require('http');
 const path = require('path');
 
-// ── fetch helper ──────────────────────────────────────────────────────────────
+// ── fetch buffer ──────────────────────────────────────────────────────────────
 function fetchBuffer(url) {
     return new Promise((resolve, reject) => {
         const proto = url.startsWith('https') ? https : http;
@@ -35,9 +35,26 @@ function pill(ctx, x, y, w, h, r) {
     ctx.closePath();
 }
 
+// ── starfield (always-working fallback bg) ────────────────────────────────────
+function drawStars(ctx, W, H, seed) {
+    let s = seed;
+    const rnd = () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+    for (let i = 0; i < 300; i++) {
+        const a = rnd() * 0.8 + 0.2;
+        ctx.beginPath();
+        ctx.arc(rnd() * W, rnd() * H, rnd() * 1.5 + 0.3, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${a.toFixed(2)})`;
+        ctx.fill();
+    }
+}
+
 // ── card generator ────────────────────────────────────────────────────────────
 async function generateProfileCard(member, dbUser) {
-    const font = await ensureFont();
+    // 1. Ensure pixel font is registered (downloads from Google Fonts if needed)
+    await ensureFont();
+
+    // Use a safe fallback font stack: PressStart2P, then monospace, then sans-serif
+    const fontStack = `PressStart2P, monospace, sans-serif`;
 
     const W = 960, H = 460;
     const canvas = createCanvas(W, H);
@@ -52,19 +69,25 @@ async function generateProfileCard(member, dbUser) {
     const pct = level >= 10 ? 100 : Math.round((xp / xpNeeded) * 100);
     const barFill = level >= 10 ? 1 : Math.min(xp / xpNeeded, 1);
 
-    // ── background (pixel2.png) ───────────────────────────────────────────────
+    // ── 2. Background: try pixel2.png, fall back to starfield ─────────────────
+    let bgLoaded = false;
     try {
         const bg = await loadImage(path.join(__dirname, '..', config.PROFILE_BG));
         ctx.drawImage(bg, 0, 0, W, H);
-    } catch {
+        bgLoaded = true;
+    } catch (_) { }
+
+    if (!bgLoaded) {
+        // Starfield fallback (same as the reference design)
         const gr = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.75);
         gr.addColorStop(0, '#0d1035');
         gr.addColorStop(1, '#04040f');
         ctx.fillStyle = gr;
         ctx.fillRect(0, 0, W, H);
+        drawStars(ctx, W, H, member.user.id.charCodeAt(0) || 42);
     }
 
-    // ── avatar ────────────────────────────────────────────────────────────────
+    // ── 3. Avatar ─────────────────────────────────────────────────────────────
     const ax = 230, ay = 270, ar = 155;
 
     ctx.save();
@@ -72,9 +95,8 @@ async function generateProfileCard(member, dbUser) {
     ctx.arc(ax, ay, ar, 0, Math.PI * 2);
     ctx.clip();
     try {
-        const avatarUrl = member.user.displayAvatarURL({ extension: 'png', size: 256 });
-        const buf = await fetchBuffer(avatarUrl);
-        const img = await loadImage(buf);
+        const url = member.user.displayAvatarURL({ extension: 'png', size: 256 });
+        const img = await loadImage(await fetchBuffer(url));
         ctx.drawImage(img, ax - ar, ay - ar, ar * 2, ar * 2);
     } catch {
         ctx.fillStyle = '#1e1e3a';
@@ -82,56 +104,63 @@ async function generateProfileCard(member, dbUser) {
     }
     ctx.restore();
 
-    // edge vignette
-    const edge = ctx.createRadialGradient(ax, ay, ar * 0.85, ax, ay, ar);
-    edge.addColorStop(0, 'transparent');
-    edge.addColorStop(1, 'rgba(5,5,20,0.5)');
+    // Soft edge shadow over avatar
+    const edgeSh = ctx.createRadialGradient(ax, ay, ar * 0.85, ax, ay, ar);
+    edgeSh.addColorStop(0, 'transparent');
+    edgeSh.addColorStop(1, 'rgba(5,5,20,0.55)');
     ctx.save();
     ctx.beginPath();
     ctx.arc(ax, ay, ar, 0, Math.PI * 2);
-    ctx.fillStyle = edge;
+    ctx.fillStyle = edgeSh;
     ctx.fill();
     ctx.restore();
 
-    // ── level badge ───────────────────────────────────────────────────────────
+    // ── 4. Level badge ────────────────────────────────────────────────────────
     const bx = ax - 85, by = ay - ar + 10, br = 44;
-
     ctx.beginPath();
     ctx.arc(bx, by, br, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(20,20,45,0.85)';
+    ctx.fillStyle = 'rgba(20,20,45,0.90)';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,0.30)';
+    ctx.lineWidth = 2.5;
     ctx.stroke();
 
-    ctx.font = `bold 15px "${font}"`;
+    ctx.save();
+    ctx.font = `bold 14px ${fontStack}`;
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(`LV${level}`, bx, by);
+    ctx.restore();
 
-    // ── rank name ─────────────────────────────────────────────────────────────
+    // ── 5. Rank name (right side) ─────────────────────────────────────────────
     const cx = 420, ry = 220;
+    ctx.save();
+    ctx.font = `bold 20px ${fontStack}`;
+    ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    ctx.font = `bold 22px "${font}"`;
-    ctx.fillStyle = '#ffffff';
     ctx.fillText(`|| ${rankName}`, cx, ry);
+    ctx.restore();
 
-    // ── XP line ───────────────────────────────────────────────────────────────
-    ctx.font = `12px "${font}"`;
+    // ── 6. XP info line ───────────────────────────────────────────────────────
+    ctx.save();
+    ctx.font = `11px ${fontStack}`;
     ctx.fillStyle = 'rgba(220,220,255,0.80)';
-    const xpLine = level < 10
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    const xpTxt = level < 10
         ? `XP: ${xp} / ${xpNeeded}   Total: ${totalXp} memes`
         : `MAX LEVEL   Total: ${totalXp} memes`;
-    ctx.fillText(xpLine, cx, ry + 48);
+    ctx.fillText(xpTxt, cx, ry + 52);
+    ctx.restore();
 
-    // ── XP bar ────────────────────────────────────────────────────────────────
-    const bX = cx, bY = ry + 75, bW = 480, bH = 50, bR = 25;
+    // ── 7. XP bar ─────────────────────────────────────────────────────────────
+    const bX = cx, bY = ry + 78, bW = 480, bH = 50, bR = 25;
 
     // track
     pill(ctx, bX, bY, bW, bH, bR);
-    ctx.fillStyle = 'rgba(15,15,40,0.65)';
+    ctx.fillStyle = 'rgba(15,15,40,0.70)';
     ctx.fill();
 
     // fill
@@ -140,26 +169,30 @@ async function generateProfileCard(member, dbUser) {
         pill(ctx, bX, bY, bW, bH, bR);
         ctx.clip();
         const fg = ctx.createLinearGradient(bX, bY, bX + bW * barFill, bY);
-        fg.addColorStop(0, '#383880');
+        fg.addColorStop(0, '#373780');
         fg.addColorStop(1, '#5858b8');
         ctx.fillStyle = fg;
         ctx.fillRect(bX, bY, bW * barFill, bH);
         ctx.restore();
     }
 
-    // % text
-    ctx.font = `bold 16px "${font}"`;
+    // % label
+    ctx.save();
+    ctx.font = `bold 15px ${fontStack}`;
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(`${pct}%`, bX + bW / 2, bY + bH / 2);
+    ctx.restore();
 
-    // ── footer ────────────────────────────────────────────────────────────────
-    ctx.font = `10px "${font}"`;
-    ctx.fillStyle = 'rgba(255,255,255,0.30)';
+    // ── 8. Footer ─────────────────────────────────────────────────────────────
+    ctx.save();
+    ctx.font = `9px ${fontStack}`;
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'alphabetic';
-    ctx.fillText('CAJU Meme Bot', W - 30, H - 22);
+    ctx.fillText('CAJU Meme Bot', W - 28, H - 20);
+    ctx.restore();
 
     return new AttachmentBuilder(canvas.toBuffer('image/png'), { name: 'profile.png' });
 }
@@ -173,7 +206,7 @@ async function handleProfile(message) {
         await message.channel.send({ files: [attachment] });
     } catch (err) {
         console.error('[Profile]', err);
-        await message.channel.send('❌ Could not generate profile card.');
+        await message.channel.send('❌ Could not generate profile card: ' + err.message);
     }
 }
 
